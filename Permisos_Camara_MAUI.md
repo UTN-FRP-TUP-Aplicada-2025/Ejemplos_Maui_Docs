@@ -10,6 +10,9 @@
 6. [Integración con MediaPicker de MAUI](#6-integración-con-mediapicker-de-maui)
 7. [Ejemplo Completo: Página con Cámara](#7-ejemplo-completo-página-con-cámara)
 8. [Troubleshooting](#8-troubleshooting)
+9. [MediaPicker vs CameraView — Dos formas de usar la cámara](#9-mediapicker-vs-cameraview--dos-formas-de-usar-la-cámara)
+10. [CameraView (CommunityToolkit): Consideraciones y Trampas](#10-cameraview-communitytoolkit-consideraciones-y-trampas)
+11. [Ejemplo Completo: CameraView con permisos y overlay](#11-ejemplo-completo-cameraview-con-permisos-y-overlay)
 
 ---
 
@@ -1139,10 +1142,14 @@ public partial class CameraPage : ContentPage
 |-------|-------|----------|
 | `Java.Lang.SecurityException: Permission Denial` | Falta permiso en `AndroidManifest.xml` | Agregar `<uses-permission android:name="android.permission.CAMERA" />` |
 | App crashea en iOS al abrir cámara | Falta `NSCameraUsageDescription` en `Info.plist` | Agregar la clave con un texto descriptivo |
-| `FileNotFoundException` al guardar foto | Falta `FileProvider` en el manifiesto | Configurar `<provider>` y `file_paths.xml` |
+| `FileNotFoundException` al guardar foto | Falta `FileProvider` en el manifiesto | Configurar `<provider>` y `file_paths.xml` (solo para MediaPicker) |
 | Permiso concedido pero cámara no abre | Emulador sin cámara configurada | Configurar cámara virtual en AVD Manager o probar en dispositivo físico |
 | `PermissionException` con MediaPicker | Permisos no solicitados antes de usar MediaPicker | Solicitar permisos runtime explícitamente antes |
 | `READ_EXTERNAL_STORAGE` no funciona en Android 13 | Permiso deprecated en API 33 | Usar `READ_MEDIA_IMAGES` en su lugar |
+| `CameraException: No camera available on device` (SIGABRT) | `CameraView` declarado en XAML en dispositivo sin cámara | No declarar `CameraView` en XAML; crearlo dinámicamente desde código después de verificar `IsCaptureSupported` (ver sección 10.1) |
+| `CameraView` crashea con `IsVisible="False"` | `IsVisible` no evita que `ConnectHandler` se ejecute | Usar `ContentView` como contenedor y crear `CameraView` por código (ver sección 10.1) |
+| Permisos se muestran como denegados en primera ejecución (Android) | `CheckStatusAsync` devuelve `Denied` en vez de `Unknown` en Android | Siempre llamar a `RequestAsync` si no está `Granted`, no filtrar por `Unknown` (ver sección 10.2) |
+| `ShouldShowRationale` devuelve `false` pero el permiso nunca se pidió | Es el comportamiento esperado de Android | Llamar a `ShouldShowRationale` después de `RequestAsync` para que sea confiable (ver sección 10.3) |
 
 ### 8.2 Checklist de verificación
 
@@ -1194,3 +1201,1000 @@ adb shell dumpsys package com.tuapp.package | grep permission
 ---
 
 > **Nota sobre seguridad**: Las fotos capturadas se guardan en `FileSystem.AppDataDirectory`, que es un directorio privado de la app. Otras apps no pueden acceder a estos archivos. Si necesitás compartir fotos, usá `FileProvider` con URIs temporales en vez de rutas absolutas.
+
+---
+
+## 9. MediaPicker vs CameraView — Dos formas de usar la cámara
+
+En .NET MAUI existen dos enfoques para tomar fotos, y cada uno tiene implicaciones diferentes en manifiestos, permisos y arquitectura.
+
+### 9.1 Comparación general
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         MediaPicker                                 │
+│                    (viene con .NET MAUI)                            │
+│                                                                     │
+│   Tu App ──➤ App de Cámara del Sistema ──➤ Foto devuelta a tu App  │
+│                                                                     │
+│   • Abre una app EXTERNA (la cámara del sistema)                   │
+│   • Necesita FileProvider para compartir archivos entre apps        │
+│   • La foto viaja por una URI content://                            │
+│   • Interfaz que NO controlás (es la del sistema)                  │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CameraView (CommunityToolkit)                    │
+│              (paquete NuGet: CommunityToolkit.Maui)                │
+│                                                                     │
+│   Tu App ──➤ Renderiza la cámara DENTRO de tu página               │
+│                                                                     │
+│   • La cámara se muestra embebida en tu UI                         │
+│   • NO necesita FileProvider (no hay otra app involucrada)          │
+│   • La foto te llega como Stream en MediaCapturedEventArgs         │
+│   • Interfaz 100% personalizable (flash, botones, overlay, etc.)   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 9.2 Tabla comparativa detallada
+
+| Aspecto | MediaPicker | CameraView (CommunityToolkit) |
+|---|---|---|
+| **Paquete** | Incluido en .NET MAUI | NuGet: `CommunityToolkit.Maui` |
+| **Cómo funciona** | Abre la app de cámara del **sistema** (otra app) | Renderiza la cámara **dentro** de tu página |
+| **UI** | No controlás la interfaz | 100% personalizable |
+| **FileProvider** | **Obligatorio** (intercambio entre apps) | **No necesario** |
+| **`file_paths.xml`** | **Obligatorio** | **No necesario** |
+| **Permisos de almacenamiento** | Puede necesitarlos (`READ/WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES`) | **No necesarios** si guardás en `AppDataDirectory` |
+| **`requestLegacyExternalStorage`** | Puede necesitarlo (Android 10) | **No necesario** |
+| **Permiso de cámara (manifiesto)** | `android.permission.CAMERA` + `NSCameraUsageDescription` | Igual |
+| **Permiso runtime** | Sí | Sí |
+| **Flash** | No controlás | Controlable por código |
+| **Selección de cámara (frontal/trasera)** | No controlás | Controlable por código |
+| **Galería** | `PickPhotoAsync` incluido | No incluido (solo captura) |
+
+### 9.3 ¿Cuándo usar cada uno?
+
+**Usá MediaPicker cuando:**
+- Necesitás algo rápido y simple
+- No te importa la interfaz de captura
+- También necesitás seleccionar fotos de la galería
+- No querés agregar dependencias extra
+
+**Usá CameraView cuando:**
+- Necesitás una interfaz de cámara personalizada
+- Querés controlar flash, zoom, selección de cámara
+- Necesitás un overlay sobre la cámara (ej: guías de encuadre)
+- La experiencia del usuario es prioritaria
+
+### 9.4 ¿Por qué MediaPicker necesita FileProvider y CameraView no?
+
+```
+MediaPicker (dos apps involucradas):
+
+Tu App                          App de Cámara del Sistema
+  │                                      │
+  │── "Tomá una foto, guardala acá" ────▶│
+  │    content://com.tuapp.fileprovider   │
+  │    /cache/photo_123.jpg               │
+  │                                      │
+  │◀── "Listo, foto guardada" ──────────│
+  │                                      │
+
+  ⚠️ Sin FileProvider, la app de cámara NO tiene dónde escribir.
+     Android no permite que una app escriba en el directorio de otra.
+     FileProvider genera una URI temporal con permisos controlados.
+
+
+CameraView (una sola app):
+
+Tu App
+  │
+  │── CameraView renderiza la cámara
+  │── CaptureImage() → Stream en memoria
+  │── Tu código guarda donde quiera
+  │
+  ✅ Todo pasa dentro de tu proceso.
+     No hay intercambio entre apps.
+     No se necesita FileProvider.
+```
+
+### 9.5 Manifiestos mínimos según el enfoque
+
+#### Solo MediaPicker (captura de foto)
+
+**Android — `AndroidManifest.xml`:**
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application android:allowBackup="true" android:label="@string/app_name">
+        <!-- FileProvider OBLIGATORIO para MediaPicker -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>
+```
+
+**`file_paths.xml` OBLIGATORIO:**
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path name="cache" path="." />
+</paths>
+```
+
+**iOS — `Info.plist`:**
+```xml
+<key>NSCameraUsageDescription</key>
+<string>La app necesita acceso a la cámara para tomar fotos.</string>
+```
+
+#### Solo CameraView (cámara embebida)
+
+**Android — `AndroidManifest.xml`:**
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- NO necesita FileProvider, file_paths.xml ni permisos de almacenamiento -->
+    <application android:allowBackup="true" android:label="@string/app_name" />
+</manifest>
+```
+
+**iOS — `Info.plist`:**
+```xml
+<key>NSCameraUsageDescription</key>
+<string>La app necesita acceso a la cámara para tomar fotos.</string>
+```
+
+> **Nota**: Si solo tomás fotos y las guardás en `FileSystem.AppDataDirectory` (directorio privado de la app), NO necesitás permisos de almacenamiento (`READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES`) ni permisos de galería (`NSPhotoLibraryUsageDescription`, `NSPhotoLibraryAddUsageDescription`). Estos solo son necesarios si accedés a la galería del usuario.
+
+---
+
+## 10. CameraView (CommunityToolkit): Consideraciones y Trampas
+
+### 10.1 Trampa crítica: `ConnectHandler` y el crash sin cámara
+
+El error más común al usar `CameraView` es este crash:
+
+```
+Unhandled managed exception:
+  No camera available on device (CommunityToolkit.Maui.Core.CameraException)
+    at CommunityToolkit.Maui.Core.CameraManager.ConnectCamera(CancellationToken)
+    at CommunityToolkit.Maui.Core.Handlers.CameraViewHandler.ConnectHandler(UIView)
+```
+
+**¿Por qué pasa?** Cuando MAUI procesa el XAML, ejecuta este flujo automáticamente:
+
+```
+XAML parseado
+    │
+    └─ Crea instancia de CameraView (el control .NET)
+         │
+         └─ MAUI busca el Handler nativo para esa plataforma
+              │
+              └─ CameraViewHandler.ConnectHandler()
+                   │
+                   └─ CameraManager.ConnectCamera()
+                        │
+                        └─ Busca hardware de cámara
+                             │
+                             ├─ Hay cámara → OK, conecta
+                             └─ NO hay cámara → CameraException → CRASH (SIGABRT)
+```
+
+**Lo importante**: `ConnectHandler` NO es un evento que vos suscribís. Es un método **interno del framework** que se ejecuta automáticamente cuando el control se agrega al árbol visual.
+
+**¿`IsVisible="False"` lo evita?** **NO.** `IsVisible` solo controla si el control se **dibuja en pantalla**, pero el control ya está en el árbol visual y su handler ya se conectó.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  INCORRECTO — IsVisible="False" NO evita ConnectHandler      │
+│                                                              │
+│  <!-- El handler se conecta igual, crash en simulador -->    │
+│  <toolkit:CameraView x:Name="Camera"                        │
+│                       IsVisible="False" />                   │
+│                                                              │
+│  Resultado: ConnectHandler() → busca cámara → CRASH          │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│  CORRECTO — Usar ContentView como contenedor vacío           │
+│                                                              │
+│  <!-- No hay CameraView → no hay handler → no hay crash -->  │
+│  <ContentView x:Name="CameraContainer" />                    │
+│                                                              │
+│  // En código C#, DESPUÉS de verificar que hay cámara:       │
+│  CameraContainer.Content = new CameraView { ... };           │
+│                                                              │
+│  Resultado: ConnectHandler() solo se ejecuta cuando vos      │
+│  asignás el CameraView al contenedor.                        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 10.2 `Permissions.CheckStatusAsync` en Android: la trampa del `Denied`
+
+En Android, `CheckStatusAsync<Permissions.Camera>()` devuelve `Denied` (no `Unknown`) cuando el permiso **nunca fue solicitado**. Esto es una diferencia clave con iOS:
+
+| Situación | iOS | Android |
+|---|---|---|
+| Permiso nunca solicitado | `Unknown` | `Denied` ⚠️ |
+| Usuario dijo "No" | `Denied` | `Denied` |
+| Usuario marcó "No volver a preguntar" | N/A (siempre es permanente) | `Denied` |
+| Permiso concedido | `Granted` | `Granted` |
+
+**El problema con código como este:**
+
+```csharp
+// ❌ INCORRECTO — En Android nunca entra al if porque status es Denied, no Unknown
+var status = await Permissions.CheckStatusAsync<Permissions.Camera>();
+
+if (status == PermissionStatus.Unknown)
+{
+    status = await Permissions.RequestAsync<Permissions.Camera>();  // Nunca se ejecuta en Android
+}
+```
+
+**La solución: siempre llamar a `RequestAsync` si no está Granted:**
+
+```csharp
+// ✅ CORRECTO — Funciona en ambas plataformas
+var status = await Permissions.CheckStatusAsync<Permissions.Camera>();
+
+if (status == PermissionStatus.Granted)
+{
+    MostrarVisorCamara();
+    return;
+}
+
+// No está Granted → pedir (tanto si es Unknown como Denied sin "no volver a preguntar")
+status = await Permissions.RequestAsync<Permissions.Camera>();
+
+if (status == PermissionStatus.Granted)
+{
+    MostrarVisorCamara();
+    return;
+}
+
+// Si llegamos acá, el usuario denegó
+```
+
+### 10.3 `ShouldShowRationale`: cuándo es confiable
+
+`Permissions.ShouldShowRationale<Permissions.Camera>()` en Android devuelve:
+
+| Situación | Valor | ¿Podemos re-pedir? |
+|---|---|---|
+| Permiso **nunca** solicitado | `false` ⚠️ | Sí |
+| Usuario dijo "No" (sin marcar "No volver a preguntar") | `true` | Sí |
+| Usuario marcó "No volver a preguntar" | `false` | No → ir a Configuración |
+
+**El problema**: devuelve `false` tanto cuando **nunca se pidió** como cuando es **denegación permanente**. No sirve para distinguir el estado inicial.
+
+**La solución**: llamar a `ShouldShowRationale` **después** de `RequestAsync`. Si el usuario ya vio el diálogo del sistema y denegó, ahora `ShouldShowRationale` es confiable:
+
+```csharp
+// Primero pedir
+status = await Permissions.RequestAsync<Permissions.Camera>();
+
+// Si fue denegado, ahora ShouldShowRationale es confiable
+if (status == PermissionStatus.Denied)
+{
+    bool puedeReintentar = false;
+
+#if ANDROID
+    // Ahora SÍ podemos confiar: si devuelve false, es permanente
+    puedeReintentar = Permissions.ShouldShowRationale<Permissions.Camera>();
+#endif
+}
+```
+
+### 10.4 Verificar hardware antes de crear el CameraView
+
+Antes de instanciar el `CameraView`, hay que verificar que el dispositivo tenga cámara:
+
+```csharp
+if (MediaPicker.Default.IsCaptureSupported)
+{
+    // Hay cámara → crear CameraView
+    MostrarVisorCamara();
+}
+else
+{
+    // No hay cámara (simulador, tablet sin cámara)
+    MostrarOverlayPermiso("Cámara no disponible",
+        "Este dispositivo no tiene cámara disponible.",
+        puedeReintentar: false);
+}
+```
+
+**¿Por qué `MediaPicker.Default.IsCaptureSupported`?** Porque verifica la presencia de hardware de cámara sin intentar conectarse. `CameraView.GetAvailableCameras()` también funciona pero requiere que el `CameraView` ya exista (y ahí ya es tarde si no hay cámara).
+
+### 10.5 Flujo completo recomendado para CameraView
+
+```
+Página se carga (OnAppearing)
+    │
+    ├─ 1. CheckStatusAsync → ¿Granted?
+    │      │
+    │      ├─ Sí → ¿IsCaptureSupported?
+    │      │         ├─ Sí → Crear CameraView dinámicamente → Mostrar
+    │      │         └─ No → Overlay "Cámara no disponible"
+    │      │
+    │      └─ No → RequestAsync → ¿Granted?
+    │               │
+    │               ├─ Sí → (mismo check de IsCaptureSupported)
+    │               │
+    │               ├─ Restricted → Overlay "Acceso restringido"
+    │               │
+    │               └─ Denied → ShouldShowRationale?
+    │                            │
+    │                            ├─ true → Overlay + botón "Pedir permiso"
+    │                            └─ false → Overlay + botón "Abrir configuración"
+    │
+    └─ 2. OnNavigatedTo → SeleccionarCamaraAsync (trasera por defecto)
+```
+
+### 10.6 Limpieza del CameraView
+
+`CameraView` accede a hardware nativo. Si no lo limpiás al salir de la página, puede causar leaks o que la cámara quede bloqueada:
+
+```csharp
+protected override void OnDisappearing()
+{
+    base.OnDisappearing();
+
+    if (_cameraView != null)
+    {
+        _cameraView.MediaCaptured -= OnMediaCaptured;
+        _cameraView.MediaCaptureFailed -= OnMediaCaptureFailed;
+        CameraContainer.Content = null;  // Remueve del árbol visual → DisconnectHandler
+        _cameraView = null;
+    }
+}
+```
+
+---
+
+## 11. Ejemplo Completo: CameraView con permisos y overlay
+
+Este ejemplo usa `CameraView` del CommunityToolkit con:
+- Creación dinámica (sin declarar en XAML) para evitar crash sin cámara
+- Permisos runtime correctos para Android e iOS
+- Overlay de permiso denegado con botones contextuales
+- Flash y selección de cámara
+- Navegación con callback para devolver la foto
+
+### 11.1 XAML — `MyMediaPickerPage.xaml`
+
+```xml
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Ejemplo_Photo_MiMediaPicker_Callback.Pages.MyMediaPickerPage"
+             Title="Camera Page"
+             BackgroundColor="#000000">
+
+    <!--
+        NOTA: No se declara <toolkit:CameraView> en XAML.
+        Se crea dinámicamente desde C# para evitar que ConnectHandler()
+        crashee en dispositivos/emuladores sin cámara.
+    -->
+
+    <Grid x:Name="DynamicLayout" RowDefinitions="Auto,*,Auto" ColumnDefinitions="*"
+          HorizontalOptions="Fill" VerticalOptions="Fill">
+
+        <!-- Botón de flash (oculto hasta que la cámara esté activa) -->
+        <Button x:Name="BtnFlashButton" Grid.Row="0" Grid.Column="0"
+                Clicked="OnActiveFlashClicked"
+                IsVisible="False"
+                HorizontalOptions="Center" VerticalOptions="Center"
+                Background="#aa000000" CornerRadius="8">
+            <Button.ImageSource>
+                <FontImageSource Glyph="{Binding FlashIcon}" FontFamily="MaterialIconsOutlined" />
+            </Button.ImageSource>
+        </Button>
+
+        <!--
+            Contenedor vacío para el CameraView.
+            CameraView se crea desde código y se asigna a CameraContainer.Content
+            DESPUÉS de verificar permisos y hardware.
+        -->
+        <ContentView x:Name="CameraContainer" Grid.Row="1" Grid.Column="0"
+                     IsVisible="False"
+                     HorizontalOptions="Fill" VerticalOptions="Fill" />
+
+        <!--
+            Overlay que se muestra cuando:
+            - El usuario denegó permisos (con o sin "No volver a preguntar")
+            - El dispositivo no tiene cámara
+            - El acceso está restringido (control parental / MDM)
+        -->
+        <Grid x:Name="PermissionDeniedOverlay"
+              Grid.Row="1" Grid.Column="0"
+              IsVisible="False"
+              BackgroundColor="#CC000000"
+              HorizontalOptions="Fill" VerticalOptions="Fill">
+
+            <VerticalStackLayout Spacing="20"
+                                 HorizontalOptions="Center"
+                                 VerticalOptions="Center"
+                                 Padding="32">
+
+                <Label Text="no_photography"
+                       FontFamily="MaterialIconsOutlined"
+                       FontSize="80"
+                       TextColor="#AAAAAA"
+                       HorizontalOptions="Center"/>
+
+                <Label x:Name="LblPermissionTitle"
+                       Text="Sin acceso a la cámara"
+                       FontSize="20"
+                       FontAttributes="Bold"
+                       TextColor="White"
+                       HorizontalOptions="Center"
+                       HorizontalTextAlignment="Center"/>
+
+                <Label x:Name="LblPermissionMessage"
+                       Text="Para tomar fotos necesitamos acceso a la cámara."
+                       FontSize="14"
+                       TextColor="#CCCCCC"
+                       HorizontalOptions="Center"
+                       HorizontalTextAlignment="Center"/>
+
+                <!-- Visible solo si el SO permite re-pedir el permiso -->
+                <Button x:Name="BtnPedirPermiso"
+                        Text="Pedir permiso"
+                        Clicked="OnPedirPermisoClicked"
+                        BackgroundColor="#512BD4"
+                        TextColor="White"
+                        CornerRadius="8"
+                        Padding="20,12"
+                        HorizontalOptions="Center"
+                        IsVisible="False"/>
+
+                <!-- Visible solo si la denegación es permanente -->
+                <Button x:Name="BtnGoToSettings"
+                        Text="Abrir configuración"
+                        Clicked="OnGoToSettingsClicked"
+                        BackgroundColor="#512BD4"
+                        TextColor="White"
+                        CornerRadius="8"
+                        Padding="20,12"
+                        HorizontalOptions="Center"/>
+
+                <Button Text="Volver"
+                        Clicked="OnVolverClicked"
+                        BackgroundColor="Transparent"
+                        TextColor="#AAAAAA"
+                        BorderColor="#555555"
+                        BorderWidth="1"
+                        CornerRadius="8"
+                        Padding="20,12"
+                        HorizontalOptions="Center"/>
+
+            </VerticalStackLayout>
+        </Grid>
+
+        <!-- Botón de captura (oculto hasta que la cámara esté activa) -->
+        <Button x:Name="BtnTomarFoto" Grid.Row="2" Grid.Column="0"
+                Clicked="OnTomarFotoClicked"
+                IsVisible="False"
+                HorizontalOptions="Center" VerticalOptions="Center"
+                Background="#aa000000" CornerRadius="8">
+            <Button.ImageSource>
+                <FontImageSource Glyph="photo_camera" Size="50" FontFamily="MaterialIconsOutlined"/>
+            </Button.ImageSource>
+        </Button>
+
+    </Grid>
+</ContentPage>
+```
+
+### 11.2 Code-behind — `MyMediaPickerPage.xaml.cs`
+
+```csharp
+using CommunityToolkit.Maui.Core;
+using CommunityToolkit.Maui.Views;
+using System.Diagnostics;
+
+namespace Ejemplo_Photo_MiMediaPicker_Callback.Pages;
+
+[QueryProperty(nameof(OnPhotoCallback), "OnPhotoCallback")]
+public partial class MyMediaPickerPage : ContentPage
+{
+    private bool _isCapturingImage = false;
+    private CancellationTokenSource? _captureCancellationTokenSource;
+
+    // Campo nullable: el CameraView se crea desde código, no desde XAML
+    private CameraView? _cameraView;
+
+    // Callback para devolver la foto a la página que navegó hasta acá
+    public Action<Image>? OnPhotoCallback { get; set; }
+
+    private string _flashIcon = "flash_off";
+    public string FlashIcon
+    {
+        get => _flashIcon;
+        set
+        {
+            if (_flashIcon != value)
+            {
+                _flashIcon = value;
+                OnPropertyChanged(nameof(FlashIcon));
+            }
+        }
+    }
+
+    public MyMediaPickerPage()
+    {
+        InitializeComponent();
+        BindingContext = this;
+        // NO llamar a StatusFlashToIcons() acá — _cameraView es null todavía
+    }
+
+    protected override async void OnAppearing()
+    {
+        base.OnAppearing();
+
+        DeviceDisplay.MainDisplayInfoChanged += OnMainDisplayInfoChanged;
+        UpdateLayoutOrientation(DeviceDisplay.MainDisplayInfo.Orientation);
+
+        // Punto de entrada principal: evaluar permisos y mostrar cámara u overlay
+        await EvaluarYMostrarEstadoPermisoAsync();
+    }
+
+    protected override void OnDisappearing()
+    {
+        base.OnDisappearing();
+
+        try
+        {
+            DeviceDisplay.MainDisplayInfoChanged -= OnMainDisplayInfoChanged;
+            _captureCancellationTokenSource?.Cancel();
+
+            // IMPORTANTE: Limpiar el CameraView para liberar hardware
+            if (_cameraView != null)
+            {
+                _cameraView.MediaCaptured -= OnMediaCaptured;
+                _cameraView.MediaCaptureFailed -= OnMediaCaptureFailed;
+                CameraContainer.Content = null;  // Remueve del árbol → DisconnectHandler
+                _cameraView = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"OnDisappearing error: {ex.Message}");
+        }
+
+#if ANDROID
+        var activity = Platform.CurrentActivity;
+        if (activity != null)
+            activity.RequestedOrientation = Android.Content.PM.ScreenOrientation.Unspecified;
+#endif
+    }
+
+    protected override async void OnNavigatedTo(NavigatedToEventArgs args)
+    {
+        base.OnNavigatedTo(args);
+
+        // Si ya tiene permisos y el CameraView existe, seleccionar cámara trasera
+        var status = await Permissions.CheckStatusAsync<Permissions.Camera>();
+        if (status == PermissionStatus.Granted && _cameraView != null)
+            await SeleccionarCamaraAsync();
+    }
+
+    // ══════════════════════════════════════════════
+    // PERMISOS — Flujo principal
+    // ══════════════════════════════════════════════
+
+    private async Task EvaluarYMostrarEstadoPermisoAsync()
+    {
+        // Paso 1: Verificar estado actual
+        var status = await Permissions.CheckStatusAsync<Permissions.Camera>();
+
+        if (status == PermissionStatus.Granted)
+        {
+            // Permiso OK → verificar que haya hardware de cámara
+            if (MediaPicker.Default.IsCaptureSupported)
+                MostrarVisorCamara();
+            else
+                MostrarOverlayPermiso("Cámara no disponible",
+                    "Este dispositivo no tiene cámara disponible.",
+                    puedeReintentar: false);
+            return;
+        }
+
+        // Paso 2: Pedir permiso
+        // NOTA: En Android, CheckStatusAsync devuelve Denied (no Unknown) cuando
+        // el permiso nunca fue solicitado. Por eso siempre llamamos a RequestAsync
+        // si no está Granted, en vez de filtrar solo por Unknown.
+        status = await Permissions.RequestAsync<Permissions.Camera>();
+
+        if (status == PermissionStatus.Granted)
+        {
+            if (MediaPicker.Default.IsCaptureSupported)
+                MostrarVisorCamara();
+            else
+                MostrarOverlayPermiso("Cámara no disponible",
+                    "Este dispositivo no tiene cámara disponible.",
+                    puedeReintentar: false);
+            return;
+        }
+
+        // Paso 3: Restringido (control parental / MDM en iOS)
+        if (status == PermissionStatus.Restricted)
+        {
+            MostrarOverlayPermiso("Acceso restringido",
+                "El acceso a la cámara está restringido por una política del dispositivo. " +
+                "Consultá con el administrador.",
+                puedeReintentar: false);
+            return;
+        }
+
+        // Paso 4: Denegado — ¿se puede volver a pedir?
+        // IMPORTANTE: ShouldShowRationale es confiable AHORA porque ya llamamos
+        // a RequestAsync (el usuario ya vio el diálogo del sistema).
+        bool puedeReintentar = false;
+
+#if ANDROID
+        puedeReintentar = Permissions.ShouldShowRationale<Permissions.Camera>();
+#endif
+        // En iOS puedeReintentar queda en false (correcto: iOS no permite re-pedir)
+
+        MostrarOverlayPermiso(
+            titulo: puedeReintentar
+                ? "Permiso de cámara necesario"
+                : "Acceso a la cámara denegado",
+            mensaje: puedeReintentar
+                ? "Para tomar fotos necesitamos acceso a la cámara. " +
+                  "Podés intentar conceder el permiso."
+                : "Para tomar fotos necesitamos acceso a la cámara. " +
+                  "Habilitalo desde los ajustes de la aplicación.",
+            puedeReintentar: puedeReintentar);
+    }
+
+    // ══════════════════════════════════════════════
+    // OVERLAY — mostrar cámara / mostrar overlay
+    // ══════════════════════════════════════════════
+
+    /// <summary>
+    /// Crea el CameraView dinámicamente (si no existe) y lo muestra.
+    /// Solo se llama después de confirmar permisos + hardware.
+    /// </summary>
+    private void MostrarVisorCamara()
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+        {
+            PermissionDeniedOverlay.IsVisible = false;
+
+            // Crear el CameraView solo si no existe
+            if (_cameraView == null)
+            {
+                _cameraView = new CameraView
+                {
+                    HorizontalOptions = LayoutOptions.Fill,
+                    VerticalOptions = LayoutOptions.Fill,
+                    Margin = new Thickness(0)
+                };
+                _cameraView.MediaCaptured += OnMediaCaptured;
+                _cameraView.MediaCaptureFailed += OnMediaCaptureFailed;
+
+                // Al asignar Content, MAUI agrega el control al árbol visual
+                // y ConnectHandler() se ejecuta → conecta la cámara
+                CameraContainer.Content = _cameraView;
+            }
+
+            CameraContainer.IsVisible = true;
+            BtnTomarFoto.IsVisible = true;
+            BtnFlashButton.IsVisible = true;
+            StatusFlashToIcons();
+        });
+    }
+
+    /// <summary>
+    /// Muestra el overlay con título, mensaje y botones contextuales.
+    /// </summary>
+    private void MostrarOverlayPermiso(string titulo, string mensaje, bool puedeReintentar)
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+        {
+            LblPermissionTitle.Text = titulo;
+            LblPermissionMessage.Text = mensaje;
+
+            // Solo uno de estos botones es visible a la vez
+            BtnPedirPermiso.IsVisible = puedeReintentar;
+            BtnGoToSettings.IsVisible = !puedeReintentar;
+
+            CameraContainer.IsVisible = false;
+            BtnTomarFoto.IsVisible = false;
+            BtnFlashButton.IsVisible = false;
+            PermissionDeniedOverlay.IsVisible = true;
+        });
+    }
+
+    // ══════════════════════════════════════════════
+    // HANDLERS DEL OVERLAY
+    // ══════════════════════════════════════════════
+
+    private async void OnPedirPermisoClicked(object sender, EventArgs e)
+    {
+        // Re-evaluar permisos (puede mostrar el diálogo del sistema otra vez en Android)
+        await EvaluarYMostrarEstadoPermisoAsync();
+    }
+
+    private void OnGoToSettingsClicked(object sender, EventArgs e)
+    {
+        // Abre la pantalla de configuración de la app en el SO
+        AppInfo.ShowSettingsUI();
+    }
+
+    private async void OnVolverClicked(object sender, EventArgs e)
+    {
+        OnPhotoCallback?.Invoke(null!);
+        await Shell.Current.GoToAsync("..");
+    }
+
+    // ══════════════════════════════════════════════
+    // CÁMARA — selección, captura, eventos
+    // ══════════════════════════════════════════════
+
+    private async Task SeleccionarCamaraAsync()
+    {
+        if (_cameraView == null) return;
+
+        try
+        {
+            var cameras = await _cameraView.GetAvailableCameras(CancellationToken.None);
+            var rear = cameras.FirstOrDefault(c => c.Position == CameraPosition.Rear)
+                       ?? cameras.FirstOrDefault(); // fallback a cualquier cámara
+
+            if (rear != null)
+                MainThread.BeginInvokeOnMainThread(() => _cameraView.SelectedCamera = rear);
+            else
+                MostrarOverlayPermiso("Cámara no disponible",
+                    "Este dispositivo no tiene cámara disponible.",
+                    puedeReintentar: false);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"SeleccionarCamaraAsync error: {ex.Message}");
+        }
+    }
+
+    private async void OnTomarFotoClicked(object sender, EventArgs e)
+    {
+        if (_isCapturingImage || _cameraView == null) return;
+
+        _isCapturingImage = true;
+        DynamicLayout.IsEnabled = false;
+
+        try
+        {
+            _captureCancellationTokenSource?.Dispose();
+            _captureCancellationTokenSource = new CancellationTokenSource();
+
+            await MainThread.InvokeOnMainThreadAsync(async () =>
+            {
+                await _cameraView.CaptureImage(_captureCancellationTokenSource.Token);
+            });
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"OnTomarFotoClicked error: {ex}");
+        }
+        finally
+        {
+            _isCapturingImage = false;
+            DynamicLayout.IsEnabled = true;
+        }
+    }
+
+    private async void OnMediaCaptured(object? sender, MediaCapturedEventArgs e)
+    {
+        await MainThread.InvokeOnMainThreadAsync(async () =>
+        {
+            if (_cameraView?.IsAvailable == true)
+            {
+                if (e.Media != null)
+                {
+                    var image = new Image { Source = ImageSource.FromStream(() => e.Media) };
+                    OnPhotoCallback?.Invoke(image);
+                }
+                await Shell.Current.GoToAsync("..");
+            }
+            else
+            {
+                await DisplayAlert("Error del dispositivo",
+                    "El dispositivo no está activo", "OK");
+            }
+        });
+    }
+
+    private void OnMediaCaptureFailed(object sender, MediaCaptureFailedEventArgs e)
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+        {
+            _isCapturingImage = false;
+            DynamicLayout.IsEnabled = true;
+            _captureCancellationTokenSource?.Dispose();
+            _captureCancellationTokenSource = null;
+        });
+    }
+
+    // ══════════════════════════════════════════════
+    // FLASH
+    // ══════════════════════════════════════════════
+
+    private void OnActiveFlashClicked(object sender, EventArgs e)
+    {
+        if (_cameraView == null) return;
+
+        _cameraView.CameraFlashMode = _cameraView.CameraFlashMode switch
+        {
+            CameraFlashMode.Off => CameraFlashMode.On,
+            CameraFlashMode.On => CameraFlashMode.Auto,
+            _ => CameraFlashMode.Off
+        };
+        StatusFlashToIcons();
+    }
+
+    public void StatusFlashToIcons()
+    {
+        if (_cameraView == null) return;
+
+        FlashIcon = _cameraView.CameraFlashMode switch
+        {
+            CameraFlashMode.Off => "flash_off",
+            CameraFlashMode.On => "flash_on",
+            CameraFlashMode.Auto => "flash_auto",
+            _ => "flash_off"
+        };
+    }
+
+    // ══════════════════════════════════════════════
+    // ORIENTACIÓN (portrait / landscape)
+    // ══════════════════════════════════════════════
+
+    private void OnMainDisplayInfoChanged(object sender, DisplayInfoChangedEventArgs e)
+    {
+        if (e != null)
+            UpdateLayoutOrientation(e.DisplayInfo.Orientation);
+    }
+
+    private void UpdateLayoutOrientation(DisplayOrientation orientation)
+    {
+        try
+        {
+            if (DynamicLayout == null) return;
+
+            DynamicLayout.BatchBegin();
+            DynamicLayout.RowDefinitions.Clear();
+            DynamicLayout.ColumnDefinitions.Clear();
+
+            if (orientation == DisplayOrientation.Landscape)
+            {
+                DynamicLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Star });
+                DynamicLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                DynamicLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Star });
+                DynamicLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                Grid.SetRow(BtnFlashButton, 0); Grid.SetColumn(BtnFlashButton, 2);
+                Grid.SetRow(CameraContainer, 0); Grid.SetColumn(CameraContainer, 1);
+                Grid.SetRow(BtnTomarFoto, 0); Grid.SetColumn(BtnTomarFoto, 0);
+                Grid.SetRow(PermissionDeniedOverlay, 0);
+                Grid.SetColumn(PermissionDeniedOverlay, 1);
+            }
+            else
+            {
+                DynamicLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                DynamicLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Star });
+                DynamicLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                DynamicLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Star });
+
+                Grid.SetRow(BtnFlashButton, 0); Grid.SetColumn(BtnFlashButton, 0);
+                Grid.SetRow(CameraContainer, 1); Grid.SetColumn(CameraContainer, 0);
+                Grid.SetRow(BtnTomarFoto, 2); Grid.SetColumn(BtnTomarFoto, 0);
+                Grid.SetRow(PermissionDeniedOverlay, 1);
+                Grid.SetColumn(PermissionDeniedOverlay, 0);
+            }
+
+            DynamicLayout.BatchCommit();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"UpdateLayoutOrientation error: {ex.Message}");
+        }
+    }
+}
+```
+
+### 11.3 Página que navega y recibe la foto — `MainPage.xaml.cs`
+
+```csharp
+namespace Ejemplo_Photo_MiMediaPicker_Callback.Pages;
+
+public partial class MainPage : ContentPage
+{
+    public MainPage()
+    {
+        InitializeComponent();
+    }
+
+    async private void OnAbrirCamaraClicked(object? sender, EventArgs e)
+    {
+        BtnPhoto.IsEnabled = false;
+
+        try
+        {
+            // Definir callback que recibe la foto como Image
+            Action<Image> resultadoCallback = async (image) =>
+            {
+                await this.Dispatcher.DispatchAsync(new Action(async () =>
+                {
+                    if (image != null) ImgPhoto.Source = image.Source;
+                }));
+            };
+
+            // Pasar el callback como parámetro de navegación
+            var pageParams = new ShellNavigationQueryParameters
+            {
+                { "OnPhotoCallback", resultadoCallback }
+            };
+
+            await Shell.Current.GoToAsync(nameof(MyMediaPickerPage), pageParams);
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlert("Error", $"Ocurrió un error: {ex.Message}", "OK");
+        }
+        finally
+        {
+            BtnPhoto.IsEnabled = true;
+        }
+    }
+}
+```
+
+### 11.4 Checklist para CameraView
+
+```
+✅ NuGet
+   └── CommunityToolkit.Maui instalado y registrado en MauiProgram.cs
+
+✅ AndroidManifest.xml (mínimo)
+   ├── android.permission.CAMERA
+   ├── uses-feature camera required="false"
+   └── NO necesita FileProvider, file_paths.xml ni permisos de almacenamiento
+
+✅ Info.plist (mínimo)
+   └── NSCameraUsageDescription (texto descriptivo)
+
+✅ XAML
+   ├── NO declarar <toolkit:CameraView> en XAML
+   ├── Usar <ContentView x:Name="CameraContainer" /> como placeholder
+   ├── Botones arrancan con IsVisible="False"
+   └── Overlay de permisos con botones contextuales
+
+✅ Code-behind
+   ├── CameraView? _cameraView como campo nullable
+   ├── Crear CameraView solo en MostrarVisorCamara()
+   ├── Verificar IsCaptureSupported ANTES de crear CameraView
+   ├── Siempre llamar RequestAsync si no está Granted (no filtrar por Unknown)
+   ├── ShouldShowRationale DESPUÉS de RequestAsync
+   ├── Null-check en _cameraView en flash, captura, etc.
+   └── Limpiar CameraView en OnDisappearing (desuscribir + null)
+```
