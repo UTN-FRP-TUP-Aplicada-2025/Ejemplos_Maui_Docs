@@ -10,6 +10,7 @@
 6. [Patrones y ejemplos](#6-patrones-y-ejemplos)
 7. [Errores comunes y trampas](#7-errores-comunes-y-trampas)
 8. [CancellationToken y la arquitectura en capas](#8-cancellationtoken-y-la-arquitectura-en-capas)
+9. [CancellationToken opcional con `= default`](#9-cancellationtoken-opcional-con--default)
 
 ---
 
@@ -542,6 +543,79 @@ private async void OnObtener_Clicked(object sender, EventArgs e)
 }
 ```
 
+### 6.5 Patrón: CancellationToken opcional con `= default`
+
+En muchos casos querés que un método async **soporte** cancelación, pero sin **obligar** al caller a pasar un token. El patrón estándar de .NET es usar `= default` como valor por defecto:
+
+```csharp
+// La firma acepta token opcional
+public async Task<Location?> ObtenerUbicacionAsync(
+    CancellationToken ct = default)   // ← default = CancellationToken.None
+{
+    var request = new GeolocationRequest(
+        GeolocationAccuracy.Best, TimeSpan.FromSeconds(30));
+    return await Geolocation.Default.GetLocationAsync(request, ct);
+}
+```
+
+`default` para un `CancellationToken` (que es un `struct`) equivale a `CancellationToken.None` — un token que **nunca se cancela**.
+
+Ahora ambas llamadas son válidas:
+
+```csharp
+// ✅ Con token — cancelable
+var location = await _gps.ObtenerUbicacionAsync(_cts.Token);
+
+// ✅ Sin token — no cancelable, corre hasta completar o timeout del request
+var location = await _gps.ObtenerUbicacionAsync();
+```
+
+#### ¿Cuándo usar `= default`?
+
+| Situación | ¿Usar `= default`? | Razón |
+|---|---|---|
+| Método de servicio / repositorio reutilizable | ✅ Sí | Flexibiliza el uso sin romper a los callers existentes |
+| API interna llamada siempre desde un contexto cancelable | ⚠️ Opcional | Podés forzar el token para no olvidarlo |
+| Librería pública / NuGet | ✅ Sí | Es la convención de la BCL de .NET (`Task.Delay`, `Stream.ReadAsync`, etc.) |
+
+#### Trade-off
+
+| Aspecto | Con `= default` | Sin `= default` (obligatorio) |
+|---|---|---|
+| **Flexibilidad** | El caller decide si pasa token o no | Obliga siempre a pasar token |
+| **Seguridad** | Riesgo de que el dev olvide pasar el token → operación no cancelable | Fuerza al dev a pensar en cancelación |
+| **Convención .NET** | Es el patrón oficial de la BCL | Más restrictivo pero más explícito |
+
+#### Ejemplo completo: interfaz + implementación + uso
+
+```csharp
+// Interfaz — token opcional
+public interface IGpsService
+{
+    Task<Location?> ObtenerUbicacionAsync(CancellationToken ct = default);
+}
+
+// Implementación — propaga el token (sea real o default)
+public class GpsService : IGpsService
+{
+    public async Task<Location?> ObtenerUbicacionAsync(
+        CancellationToken ct = default)
+    {
+        var request = new GeolocationRequest(
+            GeolocationAccuracy.Best, TimeSpan.FromSeconds(30));
+        return await Geolocation.Default.GetLocationAsync(request, ct);
+    }
+}
+
+// Uso CON token — desde una página MAUI con botón cancelar
+var location = await _gps.ObtenerUbicacionAsync(_cts.Token);
+
+// Uso SIN token — desde un test o contexto donde no importa cancelar
+var location = await _gps.ObtenerUbicacionAsync();
+```
+
+> **Nota**: Internamente, la implementación no necesita hacer nada diferente. `GetLocationAsync` recibe `CancellationToken.None` y simplemente nunca recibe señal de cancelación — corre hasta completar o hasta que venza el timeout del `GeolocationRequest`.
+
 ---
 
 ## 7. Errores comunes y trampas
@@ -698,12 +772,12 @@ protected override void OnDisappearing()
 Las interfaces de repositorio y servicio **siempre** deben incluir `CancellationToken` en sus métodos async:
 
 ```csharp
-// ✅ Interfaz bien diseñada
+// ✅ Interfaz bien diseñada — token presente con default opcional
 public interface IInfraccionRepository
 {
-    Task<Infraccion?> ObtenerPorIdAsync(int id, CancellationToken ct);
-    Task GuardarAsync(Infraccion infraccion, CancellationToken ct);
-    Task<List<Infraccion>> ObtenerPendientesAsync(CancellationToken ct);
+    Task<Infraccion?> ObtenerPorIdAsync(int id, CancellationToken ct = default);
+    Task GuardarAsync(Infraccion infraccion, CancellationToken ct = default);
+    Task<List<Infraccion>> ObtenerPendientesAsync(CancellationToken ct = default);
 }
 
 // ❌ Interfaz mal diseñada — sin token

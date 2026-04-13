@@ -2061,6 +2061,19 @@ if (location != null)
 }
 ```
 
+### 13.5 GPS en simuladores y emuladores
+
+A diferencia de la cámara (que **NO funciona** en simulador iOS), el GPS **sí funciona** en simuladores/emuladores porque ambas plataformas proveen ubicaciones simuladas.
+
+| Plataforma | ¿GPS funciona? | Ubicación por defecto | Cómo cambiarla |
+|---|---|---|---|
+| **iOS Simulator** | ✅ Sí (simulado) | Apple Park, Cupertino | Xcode: Features > Location |
+| **Android Emulator** | ✅ Sí (simulado) | Última configurada | Panel "⋮" > Location |
+| **Dispositivo real con GPS** | ✅ Sí (real) | Posición real | N/A |
+| **Dispositivo real SIN GPS** | ❌ No | N/A | `FeatureNotSupportedException` |
+
+> **Nota**: En simuladores, `GetLocationAsync` devuelve coordenadas simuladas sin lanzar excepciones. `FeatureNotSupportedException` solo ocurre en dispositivos reales sin chip GPS (tablets wifi-only, algunos dispositivos industriales).
+
 ---
 
 ## 14. CancellationToken en GPS
@@ -2109,6 +2122,10 @@ public partial class GpsPage : ContentPage
         {
             // GPS apagado
         }
+        catch (FeatureNotSupportedException)
+        {
+            // Dispositivo sin GPS (tablet wifi-only, etc.)
+        }
     }
 
     protected override void OnDisappearing()
@@ -2146,6 +2163,14 @@ private async void OnObtenerUbicacion_Clicked(object sender, EventArgs e)
     catch (OperationCanceledException)
     {
         LblInfo.Text = "Búsqueda de GPS cancelada por el usuario.";
+    }
+    catch (FeatureNotEnabledException)
+    {
+        LblInfo.Text = "El GPS está desactivado. Activalo desde ajustes.";
+    }
+    catch (FeatureNotSupportedException)
+    {
+        LblInfo.Text = "Este dispositivo no tiene GPS.";
     }
     finally
     {
@@ -2657,9 +2682,22 @@ public class GpsService
     /// <summary>
     /// Obtiene la ubicación actual con precisión máxima.
     /// Lanza OperationCanceledException si se cancela el token.
+    /// Devuelve null si no hay permisos, sin señal, o timeout.
+    /// Lanza OperationCanceledException si se cancela el token.
     /// </summary>
-    public async Task<Location?> ObtenerUbicacionAsync(CancellationToken ct)
+    public async Task<Location?> ObtenerUbicacionAsync(
+        CancellationToken ct = default)
     {
+        // 1. Verificar permiso antes de usar el GPS
+        var status = await Permissions.CheckStatusAsync<Permissions.LocationWhenInUse>();
+        if (status != PermissionStatus.Granted)
+        {
+            status = await Permissions.RequestAsync<Permissions.LocationWhenInUse>();
+        }
+        if (status != PermissionStatus.Granted)
+            return null;  // Sin permiso → null limpio, sin excepción
+
+        // 2. Con permiso confirmado, pedir ubicación
         var request = new GeolocationRequest(
             GeolocationAccuracy.Best,
             TimeSpan.FromSeconds(15));
@@ -2854,6 +2892,10 @@ public partial class InfraccionPage : ContentPage
         {
             LblEstado.Text = "El GPS está desactivado. Activalo desde ajustes.";
         }
+        catch (FeatureNotSupportedException)
+        {
+            LblEstado.Text = "Este dispositivo no tiene GPS.";
+        }
         finally
         {
             BtnRegistrar.IsEnabled = true;
@@ -2930,6 +2972,7 @@ Usuario toca "Obtener GPS y Enviar"
 | Ubicación devuelve `null` | GPS activado pero sin señal (interior de edificio) | Reintentar, mover el dispositivo, usar `GeolocationAccuracy.Medium` |
 | Precisión muy baja (>100m) | Usando `GeolocationAccuracy.Low` o señal GPS débil | Usar `GeolocationAccuracy.Best` y esperar más tiempo |
 | `GetLocationAsync` tarda mucho | Timeout corto + GPS frío ("cold start") | Aumentar timeout a 15-30s |
+| `PermissionException` al pedir ubicación | Se llamó a `GetLocationAsync` sin verificar permisos antes; el usuario canceló/denegó el diálogo del SO | Verificar permisos con `CheckStatusAsync` / `RequestAsync` **antes** de llamar a `GetLocationAsync`. No usar excepciones como control de flujo (ver sección 17.3) |
 
 ### 18.3 Errores comunes (ambos)
 
@@ -3017,7 +3060,8 @@ Usuario toca "Obtener GPS y Enviar"
    ├── Permissions.LocationWhenInUse (no LocationAlways salvo segundo plano)
    ├── Siempre llamar RequestAsync si no está Granted
    ├── ShouldShowRationale DESPUÉS de RequestAsync
-   ├── CancellationToken para cancelar consultas GPS
+   ├── Verificar permisos ANTES de GetLocationAsync (no depender de PermissionException)
+   ├── CancellationToken para cancelar consultas GPS (con = default para uso opcional)
    ├── Manejo de FeatureNotEnabledException (GPS apagado)
    ├── Manejo de FeatureNotSupportedException (sin hardware GPS)
    ├── Timeout adecuado en GeolocationRequest (10-30 segundos)
