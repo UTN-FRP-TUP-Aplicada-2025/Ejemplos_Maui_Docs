@@ -1,4 +1,4 @@
-# Permisos en .NET MAUI — Guía Completa para Desarrolladores (Cámara y GPS)
+# Permisos en .NET MAUI — Guía Completa para Desarrolladores (Cámara, GPS y PhoneDialer)
 
 ## Índice
 
@@ -24,9 +24,24 @@
 16. [Ejemplo Completo: Página con GPS](#16-ejemplo-completo-página-con-gps)
 17. [Ejemplo: GPS + Envío a Servidor con CancellationToken](#17-ejemplo-gps--envío-a-servidor-con-cancellationtoken)
 
-### Parte IV — Referencia
-18. [Troubleshooting Unificado (Cámara + GPS)](#18-troubleshooting-unificado-cámara--gps)
-19. [Checklists de Verificación](#19-checklists-de-verificación)
+### Parte IV — PhoneDialer / Llamadas / SMS
+20. [¿Qué es el PhoneDialer? — No es un dispositivo, es una API](#20-qué-es-el-phonedialer--no-es-un-dispositivo-es-una-api)
+21. [Esquemas URI de comunicación: tel:, sms:, mailto:](#21-esquemas-uri-de-comunicación-tel-sms-mailto)
+22. [Configuración de Manifiestos (PhoneDialer y SMS)](#22-configuración-de-manifiestos-phonedialer-y-sms)
+23. [PhoneDialer.Default.Open — Abrir el marcador con número precargado](#23-phonedialerdefaultopen--abrir-el-marcador-con-número-precargado)
+24. [Llamada directa sin confirmación del usuario (solo Android)](#24-llamada-directa-sin-confirmación-del-usuario-solo-android)
+25. [Permisos en tiempo de ejecución para CALL_PHONE](#25-permisos-en-tiempo-de-ejecución-para-call_phone)
+26. [Manejo de denegación de permisos para CALL_PHONE](#26-manejo-de-denegación-de-permisos-para-call_phone)
+27. [Sms.Default.ComposeAsync — Enviar SMS desde la app](#27-smsdefaultcomposeasync--enviar-sms-desde-la-app)
+28. [Email: Launcher y esquema mailto](#28-email-launcher-y-esquema-mailto)
+29. [Abrir WhatsApp, Telegram y otras apps de mensajería vía URI](#29-abrir-whatsapp-telegram-y-otras-apps-de-mensajería-vía-uri)
+30. [API Reference: Clases y Métodos de PhoneDialer, Sms, Email y Launcher](#30-api-reference-clases-y-métodos-de-phonedialer-sms-email-y-launcher)
+31. [Ejemplo Completo: Página con PhoneDialer](#31-ejemplo-completo-página-con-phonedialer)
+32. [Ejemplo Completo: Página de Contacto Multicanal](#32-ejemplo-completo-página-de-contacto-multicanal)
+
+### Parte V — Referencia
+33. [Troubleshooting Unificado (Cámara + GPS + PhoneDialer + SMS)](#33-troubleshooting-unificado-cámara--gps--phonedialer--sms)
+34. [Checklists de Verificación](#34-checklists-de-verificación)
 
 ---
 
@@ -2943,13 +2958,1038 @@ Usuario toca "Obtener GPS y Enviar"
 
 ---
 
-# PARTE IV — REFERENCIA
+# PARTE IV — PHONEDIALER / LLAMADAS / SMS
 
 ---
 
-## 18. Troubleshooting Unificado (Cámara + GPS)
+## 20. ¿Qué es el PhoneDialer? — No es un dispositivo, es una API
 
-### 18.1 Errores de Cámara
+`PhoneDialer` en .NET MAUI **no es un dispositivo físico** — es una API que permite a tu app interactuar con la aplicación de teléfono del dispositivo.
+
+### 20.1 ¿Qué hace exactamente?
+
+| Acción | Método | Resultado |
+|--------|--------|-----------|
+| Abrir el marcador con número precargado | `PhoneDialer.Default.Open("1155551234")` | Abre la app de teléfono con el número, el usuario toca Llamar |
+| Verificar si el dispositivo puede hacer llamadas | `PhoneDialer.Default.IsSupported` | `true` en celulares, `false` en tablets wifi-only |
+
+### 20.2 Analogía con GPS
+
+```
+GPS                                    PhoneDialer
+─────────────────────────────          ─────────────────────────────
+Geolocation.Default.GetLocationAsync   PhoneDialer.Default.Open
+→ accede al hardware GPS               → accede a la app de teléfono
+→ necesita permisos de ubicación        → NO necesita permisos (solo abre marcador)
+→ devuelve Location                     → no devuelve nada, abre otra app
+```
+
+### 20.3 ¿PhoneDialer necesita permisos?
+
+| Acción | ¿Necesita permiso? | Explicación |
+|--------|-------------------|-------------|
+| `PhoneDialer.Default.Open()` | **NO** | Solo abre el marcador — el usuario decide si llama |
+| Llamada directa (`Intent.ActionCall`) | **SÍ** (`CALL_PHONE`) | Inicia la llamada sin confirmación del usuario (solo Android) |
+
+> **Nota**: Esta distinción es clave. `PhoneDialer.Default.Open()` es como pasarle un papel con un número de teléfono al usuario. `Intent.ActionCall` es como marcar el número por él sin pedirle confirmación.
+
+---
+
+## 21. Esquemas URI de comunicación: tel:, sms:, mailto:
+
+Un **esquema URI** (Uniform Resource Identifier) es una cadena con formato `esquema:datos` que el sistema operativo sabe interpretar para abrir la aplicación correcta.
+
+### 21.1 Tabla de esquemas
+
+| Esquema | Formato | Qué abre | Ejemplo |
+|---------|---------|----------|---------|
+| `tel:` | `tel:+5491155551234` | App de teléfono (marcador) | Precarga el número |
+| `sms:` | `sms:+5491155551234` | App de mensajes SMS | Abre conversación con ese número |
+| `mailto:` | `mailto:info@ejemplo.com` | App de correo electrónico | Abre compositor de email |
+| `https://wa.me/` | `https://wa.me/5491155551234` | WhatsApp | Abre chat con ese número |
+| `tg://` | `tg://resolve?domain=usuario` | Telegram | Abre chat con ese usuario |
+
+### 21.2 ¿Cómo funciona Launcher?
+
+`Launcher.Default.OpenAsync(uri)` le dice al SO: "abrí la app que sepa manejar este URI".
+
+```
+Tu app → Launcher.OpenAsync("tel:+5491155551234") → SO → App de Teléfono
+Tu app → Launcher.OpenAsync("https://wa.me/549...") → SO → WhatsApp
+Tu app → Launcher.OpenAsync("mailto:x@y.com")      → SO → Gmail / Mail
+```
+
+### 21.3 ¿Y si la app destino no está instalada?
+
+```csharp
+// ✅ CORRECTO — verificar antes de abrir
+if (await Launcher.Default.CanOpenAsync("https://wa.me/5491155551234"))
+{
+    await Launcher.Default.OpenAsync("https://wa.me/5491155551234");
+}
+else
+{
+    await DisplayAlert("Error", "WhatsApp no está instalado", "OK");
+}
+```
+
+> **Nota**: `CanOpenAsync` verifica si hay alguna app registrada para ese esquema URI. En iOS requiere configurar `LSApplicationQueriesSchemes` en `Info.plist`.
+
+---
+
+## 22. Configuración de Manifiestos (PhoneDialer y SMS)
+
+### 22.1 Android — AndroidManifest.xml
+
+```xml
+<!-- Para PhoneDialer.Default.Open() → NO necesita ningún permiso -->
+<!-- Solo abre el marcador, no inicia la llamada -->
+
+<!-- Para llamada directa (Intent.ActionCall) → SÍ necesita permiso -->
+<uses-permission android:name="android.permission.CALL_PHONE" />
+
+<!-- Para verificar qué apps están instaladas (Android 11+) -->
+<queries>
+    <intent>
+        <action android:name="android.intent.action.DIAL" />
+        <data android:scheme="tel" />
+    </intent>
+    <intent>
+        <action android:name="android.intent.action.SENDTO" />
+        <data android:scheme="smsto" />
+    </intent>
+    <intent>
+        <action android:name="android.intent.action.SENDTO" />
+        <data android:scheme="mailto" />
+    </intent>
+    <!-- WhatsApp -->
+    <package android:name="com.whatsapp" />
+    <!-- Telegram -->
+    <package android:name="org.telegram.messenger" />
+</queries>
+```
+
+> **¿Por qué es obligatorio `<queries>`?**
+> Desde **Android 11 (API 30)**, el sistema aplica **filtrado de visibilidad de paquetes** (*package visibility filtering*): una app ya no puede "ver" todas las demás apps instaladas por defecto.
+> Si no declarás `<queries>`, el SO le oculta a tu app la existencia de la app de Teléfono, SMS, etc.
+> La consecuencia práctica es que **`PhoneDialer.Default.IsSupported` devuelve `false`** incluso en un dispositivo físico con SIM, y `Launcher.CanOpenAsync()` también falla.
+>
+> **Retrocompatibilidad:** en versiones anteriores a Android 11 (API < 30), la etiqueta `<queries>` es **ignorada silenciosamente** por el SO. Podés dejarla siempre declarada sin riesgo.
+
+### 22.2 iOS — Info.plist
+
+```xml
+<!-- Solo para apps de TERCEROS — los esquemas del sistema (tel, sms, mailto)
+     NO necesitan declararse porque iOS los maneja nativamente -->
+<key>LSApplicationQueriesSchemes</key>
+<array>
+    <string>whatsapp</string>
+    <string>tg</string>
+</array>
+```
+
+> **Diferencia clave con Android:** iOS **no necesita** declarar esquemas del sistema (`tel:`, `sms:`, `mailto:`) en `LSApplicationQueriesSchemes`. El SO los maneja nativamente y `PhoneDialer.Default.IsSupported` funciona sin configuración extra.
+> Solo necesitás listar esquemas de **apps de terceros** (`whatsapp`, `tg`, etc.) para que `Launcher.CanOpenAsync("whatsapp://...")` devuelva `true` cuando la app está instalada.
+
+### 22.3 Comparación Android vs iOS
+
+| Aspecto | Android | iOS |
+|---------|---------|-----|
+| `PhoneDialer.Open()` | Sin permisos | Sin permisos |
+| Llamada directa | `CALL_PHONE` en Manifest + permiso runtime | **No disponible** — Apple no lo permite |
+| Verificar apps instaladas | `<queries>` en Manifest (obligatorio API 30+; ignorado en API < 30) | `LSApplicationQueriesSchemes` en Info.plist (solo para apps de terceros) |
+| SMS | Sin permisos (abre app SMS) | Sin permisos (abre app Mensajes) |
+| Email | Sin permisos (abre app Email) | Sin permisos (abre app Mail) |
+
+---
+
+## 23. PhoneDialer.Default.Open — Abrir el marcador con número precargado
+
+### 23.1 Uso básico
+
+```csharp
+// ✅ CORRECTO — abre el marcador con el número precargado
+// El usuario decide si toca "Llamar" o no
+PhoneDialer.Default.Open("1155551234");
+```
+
+### 23.2 Verificar soporte antes de llamar
+
+```csharp
+if (PhoneDialer.Default.IsSupported)
+{
+    PhoneDialer.Default.Open("1155551234");
+}
+else
+{
+    await DisplayAlert("Error", "Este dispositivo no puede hacer llamadas", "OK");
+}
+```
+
+### 23.3 ¿Qué pasa en cada plataforma?
+
+| Plataforma | Comportamiento |
+|------------|---------------|
+| Android con SIM | Abre app Teléfono con número precargado |
+| Android sin SIM (tablet wifi-only) | `IsSupported` devuelve `false` |
+| iOS con SIM | Abre app Teléfono con número precargado |
+| iOS sin SIM (iPod/iPad wifi-only) | `IsSupported` devuelve `false` |
+| Emulador Android | `IsSupported` puede ser `true` pero la llamada no se concreta |
+| Simulador iOS | `IsSupported` devuelve `false` |
+| Android físico con SIM pero sin `<queries>` | `IsSupported` devuelve `false` (ver nota abajo) |
+
+> ⚠️ **`IsSupported` devuelve `false` en un dispositivo físico con SIM?**
+> En Android 11+, si falta la etiqueta `<queries>` en `AndroidManifest.xml`, el sistema le oculta a tu app la existencia del marcador telefónico. Resultado: `IsSupported` devuelve `false` aunque el dispositivo pueda hacer llamadas. Solución: agregar `<queries>` con el intent `android.intent.action.DIAL` y el esquema `tel` (ver sección 22.1).
+
+### 23.4 Formato del número
+
+```csharp
+// ✅ Todos estos formatos funcionan
+PhoneDialer.Default.Open("1155551234");          // sin código de país
+PhoneDialer.Default.Open("+5491155551234");       // con código de país
+PhoneDialer.Default.Open("0800-333-4444");        // con guiones
+
+// ❌ INCORRECTO — no pasar cadena vacía
+PhoneDialer.Default.Open("");   // lanza ArgumentNullException
+```
+
+---
+
+## 24. Llamada directa sin confirmación del usuario (solo Android)
+
+### 24.0 ¿Qué es `CALL_PHONE`?
+
+`CALL_PHONE` (`android.permission.CALL_PHONE`) es un **permiso de Android** clasificado como **peligroso** (*dangerous permission*). Otorga a la app la capacidad de iniciar una llamada telefónica **sin que el usuario toque el botón "Llamar"** del marcador.
+
+| Aspecto | Detalle |
+|---------|--------:|
+| **Nombre completo** | `android.permission.CALL_PHONE` |
+| **Categoría** | Permiso peligroso (*dangerous*) → requiere solicitud en tiempo de ejecución |
+| **Qué habilita** | Usar `Intent.ActionCall` para iniciar una llamada directa |
+| **Sin este permiso** | Solo se puede usar `Intent.ActionDial` / `PhoneDialer.Default.Open()` (abre el marcador, no llama) |
+| **¿Existe en iOS?** | **No** — Apple prohíbe que una app inicie llamadas sin confirmación del usuario |
+| **¿Cuándo usarlo?** | Apps de emergencia, call centers, asistencia. La mayoría de las apps **no** lo necesitan |
+
+> **Regla simple:**
+> - `PhoneDialer.Default.Open()` → **no necesita** `CALL_PHONE` → abre el marcador y el usuario decide.
+> - `Intent.ActionCall` → **sí necesita** `CALL_PHONE` → la llamada se inicia sin intervención del usuario.
+
+### 24.1 ¿Cuándo usar esto?
+
+En apps de **emergencia**, **call centers** o asistencia donde el usuario ya confirmó que quiere llamar. En la gran mayoría de apps, `PhoneDialer.Default.Open()` es suficiente.
+
+### 24.2 ACTION_DIAL vs ACTION_CALL
+
+| Aspecto | `ACTION_DIAL` | `ACTION_CALL` |
+|---------|--------------|---------------|
+| ¿Qué hace? | Abre marcador con número | **Inicia la llamada directamente** |
+| ¿Necesita permiso? | NO | SÍ — `CALL_PHONE` |
+| ¿Equivalente MAUI? | `PhoneDialer.Default.Open()` | Código nativo Android |
+| ¿Disponible en iOS? | Sí (vía `tel:`) | **NO** — Apple no lo permite |
+
+### 24.3 Código nativo Android
+
+```csharp
+#if ANDROID
+using Android.Content;
+using AndroidUri = Android.Net.Uri;
+
+// ✅ Llamada directa — requiere permiso CALL_PHONE
+var intent = new Intent(Intent.ActionCall);
+intent.SetData(AndroidUri.Parse("tel:+5491155551234"));
+intent.SetFlags(ActivityFlags.NewTask);
+Platform.CurrentActivity?.StartActivity(intent);
+#endif
+```
+
+### 24.4 ¿Por qué no existe en iOS?
+
+Apple **prohíbe** que una app inicie una llamada sin intervención del usuario. Incluso usando `tel:`, iOS muestra un diálogo de confirmación ("¿Desea llamar a este número?"). Esta es una política de seguridad de la plataforma.
+
+```
+Android                              iOS
+────────────────────                 ────────────────────
+ACTION_DIAL  → marcador (sin perm.) tel: → marcador + diálogo confirm.
+ACTION_CALL  → llama directo (perm.) ❌ No existe equivalente
+```
+
+---
+
+## 25. Permisos en tiempo de ejecución para CALL_PHONE
+
+> Esta sección aplica **solo si usás llamada directa** (`Intent.ActionCall`). Si usás `PhoneDialer.Default.Open()`, no necesitás nada de esto.
+
+### 25.1 Patrón de verificación
+
+```csharp
+#if ANDROID
+using Android;
+using Android.Content;
+using AndroidUri = Android.Net.Uri;
+using AndroidX.Core.App;
+using AndroidX.Core.Content;
+
+private async Task RealizarLlamadaDirectaAsync(string numero)
+{
+    var activity = Platform.CurrentActivity;
+    if (activity == null) return;
+
+    // 1. Verificar si el permiso ya fue concedido
+    var permiso = ContextCompat.CheckSelfPermission(activity, Manifest.Permission.CallPhone);
+
+    if (permiso == Android.Content.PM.Permission.Granted)
+    {
+        // ✅ Permiso concedido → llamar directamente
+        var intent = new Intent(Intent.ActionCall);
+        intent.SetData(AndroidUri.Parse($"tel:{numero}"));
+        intent.SetFlags(ActivityFlags.NewTask);
+        activity.StartActivity(intent);
+    }
+    else
+    {
+        // 2. Pedir permiso al usuario
+        ActivityCompat.RequestPermissions(activity, new[] { Manifest.Permission.CallPhone }, 1001);
+    }
+}
+#endif
+```
+
+### 25.2 Alternativa multiplataforma con Permissions API
+
+```csharp
+private async Task RealizarLlamadaDirectaAsync(string numero)
+{
+    var status = await Permissions.CheckStatusAsync<Permissions.Phone>();
+
+    if (status != PermissionStatus.Granted)
+    {
+        status = await Permissions.RequestAsync<Permissions.Phone>();
+    }
+
+    if (status == PermissionStatus.Granted)
+    {
+#if ANDROID
+        var intent = new Intent(Intent.ActionCall);
+        intent.SetData(AndroidUri.Parse($"tel:{numero}"));
+        intent.SetFlags(ActivityFlags.NewTask);
+        Platform.CurrentActivity?.StartActivity(intent);
+#else
+        // iOS no soporta llamada directa, usar PhoneDialer
+        PhoneDialer.Default.Open(numero);
+#endif
+    }
+    else
+    {
+        await DisplayAlert("Permiso denegado",
+            "Se necesita el permiso de teléfono para llamar directamente", "OK");
+    }
+}
+```
+
+---
+
+## 26. Manejo de denegación de permisos para CALL_PHONE
+
+### 26.1 Flujo completo con ShouldShowRationale
+
+```csharp
+private async Task LlamarConPermisoAsync(string numero)
+{
+    var status = await Permissions.CheckStatusAsync<Permissions.Phone>();
+
+    if (status == PermissionStatus.Granted)
+    {
+        RealizarLlamada(numero);
+        return;
+    }
+
+    // Pedir permiso
+    status = await Permissions.RequestAsync<Permissions.Phone>();
+
+    if (status == PermissionStatus.Granted)
+    {
+        RealizarLlamada(numero);
+        return;
+    }
+
+    // Permiso denegado
+    if (Permissions.ShouldShowRationale<Permissions.Phone>())
+    {
+        // Denegación TEMPORAL — se puede volver a pedir
+        bool reintentar = await DisplayAlert(
+            "Permiso necesario",
+            "Necesitamos acceso al teléfono para hacer la llamada directa. ¿Querés intentar de nuevo?",
+            "Sí", "No");
+
+        if (reintentar)
+        {
+            status = await Permissions.RequestAsync<Permissions.Phone>();
+            if (status == PermissionStatus.Granted)
+                RealizarLlamada(numero);
+        }
+    }
+    else
+    {
+        // Denegación PERMANENTE — redirigir a Configuración
+        bool abrirConfig = await DisplayAlert(
+            "Permiso bloqueado",
+            "El permiso de teléfono fue denegado permanentemente. Abrí Configuración para habilitarlo.",
+            "Abrir Configuración", "Cancelar");
+
+        if (abrirConfig)
+            AppInfo.Current.ShowSettingsUI();
+    }
+}
+
+private void RealizarLlamada(string numero)
+{
+#if ANDROID
+    var intent = new Intent(Intent.ActionCall);
+    intent.SetData(AndroidUri.Parse($"tel:{numero}"));
+    intent.SetFlags(ActivityFlags.NewTask);
+    Platform.CurrentActivity?.StartActivity(intent);
+#else
+    PhoneDialer.Default.Open(numero);
+#endif
+}
+```
+
+### 26.2 Diagrama de flujo de permisos CALL_PHONE
+
+```
+LlamarConPermisoAsync("1155551234")
+    │
+    ├── CheckStatusAsync<Permissions.Phone>()
+    │       ├── Granted → RealizarLlamada() ✅
+    │       └── Denied / Unknown ↓
+    │
+    ├── RequestAsync<Permissions.Phone>()
+    │       ├── Granted → RealizarLlamada() ✅
+    │       └── Denied ↓
+    │
+    ├── ShouldShowRationale()?
+    │       ├── true → "¿Querés intentar de nuevo?"
+    │       │           ├── Sí → RequestAsync (segundo intento)
+    │       │           └── No → fin
+    │       │
+    │       └── false → Denegación permanente
+    │                   └── "Abrir Configuración" → AppInfo.ShowSettingsUI()
+```
+
+---
+
+## 27. Sms.Default.ComposeAsync — Enviar SMS desde la app
+
+### 27.1 Uso básico
+
+```csharp
+// ✅ CORRECTO — abre la app de SMS con número y texto precargados
+var mensaje = new SmsMessage("Hola, te contactamos desde la app", new[] { "+5491155551234" });
+await Sms.Default.ComposeAsync(mensaje);
+```
+
+### 27.2 Con múltiples destinatarios
+
+```csharp
+var destinatarios = new[] { "+5491155551234", "+5491166662222" };
+var mensaje = new SmsMessage("Recordatorio: turno mañana a las 10hs", destinatarios);
+await Sms.Default.ComposeAsync(mensaje);
+```
+
+### 27.3 Verificar soporte
+
+```csharp
+if (Sms.Default.IsComposeSupported)
+{
+    var mensaje = new SmsMessage("Hola", new[] { "1155551234" });
+    await Sms.Default.ComposeAsync(mensaje);
+}
+else
+{
+    await DisplayAlert("Error", "Este dispositivo no puede enviar SMS", "OK");
+}
+```
+
+### 27.4 Comparación Android vs iOS
+
+| Aspecto | Android | iOS |
+|---------|---------|-----|
+| Permisos | Ninguno (abre app SMS) | Ninguno (abre app Mensajes) |
+| Múltiples destinatarios | ✅ Soportado | ✅ Soportado |
+| Texto precargado | ✅ | ✅ |
+| Emulador/Simulador | Abre app SMS (no envía) | Abre app Mensajes (no envía) |
+
+> **Nota**: `Sms.Default.ComposeAsync` **no envía el SMS directamente**. Abre la app de mensajes del SO con el texto y destinatarios precargados. El usuario toca "Enviar".
+
+---
+
+## 28. Email: Launcher y esquema mailto
+
+### 28.1 Usando Email.Default.ComposeAsync
+
+```csharp
+// ✅ CORRECTO — abre el compositor de email
+var emailMessage = new EmailMessage
+{
+    Subject = "Consulta desde la app",
+    Body = "Hola, quería consultar sobre...",
+    To = new List<string> { "info@ejemplo.com" }
+};
+
+await Email.Default.ComposeAsync(emailMessage);
+```
+
+### 28.2 Con CC, BCC y adjuntos
+
+```csharp
+var emailMessage = new EmailMessage
+{
+    Subject = "Reporte de incidencia",
+    Body = "Adjunto captura del error",
+    To = new List<string> { "soporte@ejemplo.com" },
+    Cc = new List<string> { "supervisor@ejemplo.com" },
+    Bcc = new List<string> { "log@ejemplo.com" }
+};
+
+// Adjuntar archivo
+var archivo = Path.Combine(FileSystem.AppDataDirectory, "reporte.txt");
+emailMessage.Attachments?.Add(new EmailAttachment(archivo));
+
+await Email.Default.ComposeAsync(emailMessage);
+```
+
+### 28.3 Alternativa con Launcher y mailto
+
+```csharp
+// Alternativa usando esquema URI mailto:
+var uri = "mailto:info@ejemplo.com?subject=Consulta&body=Hola";
+await Launcher.Default.OpenAsync(uri);
+```
+
+### 28.4 Verificar soporte
+
+```csharp
+if (Email.Default.IsComposeSupported)
+{
+    // Abrir compositor de email
+}
+else
+{
+    // Alternativa: copiar dirección email al portapapeles
+    await Clipboard.Default.SetTextAsync("info@ejemplo.com");
+    await DisplayAlert("Sin email", "No hay app de email instalada. La dirección fue copiada al portapapeles.", "OK");
+}
+```
+
+### 28.5 Comparación Android vs iOS
+
+| Aspecto | Android | iOS |
+|---------|---------|-----|
+| API MAUI | `Email.Default.ComposeAsync` | `Email.Default.ComposeAsync` |
+| Permisos | Ninguno | Ninguno |
+| App por defecto | Gmail (o la que configure el usuario) | Mail |
+| Adjuntos | ✅ Soportado | ✅ Soportado |
+| `mailto:` vía Launcher | ✅ | ✅ |
+
+---
+
+## 29. Abrir WhatsApp, Telegram y otras apps de mensajería vía URI
+
+### 29.1 WhatsApp
+
+```csharp
+// ✅ CORRECTO — abrir chat de WhatsApp con número específico
+// Formato: https://wa.me/{código_país}{número} (sin + ni espacios)
+var numero = "5491155551234"; // Argentina, sin +
+var url = $"https://wa.me/{numero}?text=Hola%2C%20te%20contacto%20desde%20la%20app";
+
+if (await Launcher.Default.CanOpenAsync(url))
+{
+    await Launcher.Default.OpenAsync(url);
+}
+else
+{
+    await DisplayAlert("Error", "WhatsApp no está instalado", "OK");
+}
+```
+
+### 29.2 Telegram
+
+```csharp
+// Por nombre de usuario
+var url = "https://t.me/nombre_usuario";
+
+// Por número de teléfono (requiere que el usuario tenga Telegram)
+var urlTel = "https://t.me/+5491155551234";
+
+if (await Launcher.Default.CanOpenAsync(url))
+{
+    await Launcher.Default.OpenAsync(url);
+}
+else
+{
+    await DisplayAlert("Error", "Telegram no está instalado", "OK");
+}
+```
+
+### 29.3 Tabla de URIs de mensajería
+
+| App | URI | Ejemplo |
+|-----|-----|---------|
+| WhatsApp | `https://wa.me/{número}` | `https://wa.me/5491155551234` |
+| WhatsApp con texto | `https://wa.me/{número}?text={mensaje}` | `https://wa.me/5491155551234?text=Hola` |
+| Telegram (usuario) | `https://t.me/{usuario}` | `https://t.me/soporte_app` |
+| Telegram (teléfono) | `https://t.me/+{número}` | `https://t.me/+5491155551234` |
+
+### 29.4 Método genérico para abrir apps externas
+
+```csharp
+private async Task AbrirAppExternaAsync(string uri, string nombreApp)
+{
+    try
+    {
+        if (await Launcher.Default.CanOpenAsync(uri))
+        {
+            await Launcher.Default.OpenAsync(uri);
+        }
+        else
+        {
+            await DisplayAlert("No disponible",
+                $"{nombreApp} no está instalado en este dispositivo", "OK");
+        }
+    }
+    catch (Exception ex)
+    {
+        await DisplayAlert("Error", $"No se pudo abrir {nombreApp}: {ex.Message}", "OK");
+    }
+}
+
+// Uso:
+await AbrirAppExternaAsync("https://wa.me/5491155551234", "WhatsApp");
+await AbrirAppExternaAsync("https://t.me/soporte", "Telegram");
+await AbrirAppExternaAsync("mailto:info@ejemplo.com", "Email");
+```
+
+---
+
+## 30. API Reference: Clases y Métodos de PhoneDialer, Sms, Email y Launcher
+
+### 30.1 PhoneDialer
+
+| Miembro | Tipo | Descripción |
+|---------|------|-------------|
+| `PhoneDialer.Default` | `IPhoneDialer` | Instancia por defecto del servicio |
+| `.IsSupported` | `bool` | `true` si el dispositivo puede hacer llamadas |
+| `.Open(string number)` | `void` | Abre el marcador con el número precargado |
+
+### 30.2 Sms
+
+| Miembro | Tipo | Descripción |
+|---------|------|-------------|
+| `Sms.Default` | `ISms` | Instancia por defecto del servicio |
+| `.IsComposeSupported` | `bool` | `true` si el dispositivo puede abrir compositor de SMS |
+| `.ComposeAsync(SmsMessage)` | `Task` | Abre la app de SMS con mensaje precargado |
+| `SmsMessage(string body, string[] recipients)` | constructor | Crea un mensaje SMS con cuerpo y destinatarios |
+
+### 30.3 Email
+
+| Miembro | Tipo | Descripción |
+|---------|------|-------------|
+| `Email.Default` | `IEmail` | Instancia por defecto del servicio |
+| `.IsComposeSupported` | `bool` | `true` si el dispositivo puede abrir compositor de email |
+| `.ComposeAsync(EmailMessage)` | `Task` | Abre la app de email con mensaje precargado |
+| `EmailMessage` | clase | Contiene `Subject`, `Body`, `To`, `Cc`, `Bcc`, `Attachments` |
+| `EmailAttachment(string fullPath)` | constructor | Crea un adjunto a partir de una ruta de archivo |
+
+### 30.4 Launcher
+
+| Miembro | Tipo | Descripción |
+|---------|------|-------------|
+| `Launcher.Default` | `ILauncher` | Instancia por defecto del servicio |
+| `.OpenAsync(string uri)` | `Task<bool>` | Abre el URI en la app correspondiente |
+| `.OpenAsync(Uri uri)` | `Task<bool>` | Sobrecarga que acepta `Uri` |
+| `.CanOpenAsync(string uri)` | `Task<bool>` | Verifica si hay una app que pueda abrir el URI |
+| `.TryOpenAsync(string uri)` | `Task<bool>` | Intenta abrir; devuelve `false` si no puede |
+
+---
+
+## 31. Ejemplo Completo: Página con PhoneDialer
+
+### 31.1 XAML — PhoneDialerPage.xaml
+
+```xml
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="MiApp.PhoneDialerPage"
+             Title="PhoneDialer">
+
+    <VerticalStackLayout Padding="20" Spacing="15">
+        <Label Text="Llamar por teléfono"
+               FontSize="24" FontAttributes="Bold" />
+
+        <Entry x:Name="EntryNumero"
+               Placeholder="Número de teléfono"
+               Keyboard="Telephone" />
+
+        <Button Text="📞 Abrir marcador"
+                Clicked="OnAbrirMarcador_Clicked" />
+
+        <Button x:Name="BtnLlamadaDirecta"
+                Text="📱 Llamada directa (Android)"
+                Clicked="OnLlamadaDirecta_Clicked"
+                IsVisible="False" />
+
+        <Label x:Name="LblEstado"
+               TextColor="Gray"
+               FontSize="14" />
+    </VerticalStackLayout>
+</ContentPage>
+```
+
+### 31.2 Code-behind — PhoneDialerPage.xaml.cs
+
+```csharp
+using Microsoft.Maui.ApplicationModel.Communication;
+
+namespace MiApp;
+
+public partial class PhoneDialerPage : ContentPage
+{
+    public PhoneDialerPage()
+    {
+        InitializeComponent();
+
+        // Mostrar botón de llamada directa solo en Android
+#if ANDROID
+        BtnLlamadaDirecta.IsVisible = true;
+#endif
+    }
+
+    private async void OnAbrirMarcador_Clicked(object sender, EventArgs e)
+    {
+        var numero = EntryNumero.Text?.Trim();
+        if (string.IsNullOrEmpty(numero))
+        {
+            await DisplayAlert("Error", "Ingresá un número de teléfono", "OK");
+            return;
+        }
+
+        if (PhoneDialer.Default.IsSupported)
+        {
+            try
+            {
+                PhoneDialer.Default.Open(numero);
+                LblEstado.Text = $"Marcador abierto con: {numero}";
+            }
+            catch (Exception ex)
+            {
+                await DisplayAlert("Error", $"No se pudo abrir el marcador: {ex.Message}", "OK");
+            }
+        }
+        else
+        {
+            await DisplayAlert("No soportado",
+                "Este dispositivo no puede hacer llamadas telefónicas", "OK");
+        }
+    }
+
+    private async void OnLlamadaDirecta_Clicked(object sender, EventArgs e)
+    {
+        var numero = EntryNumero.Text?.Trim();
+        if (string.IsNullOrEmpty(numero))
+        {
+            await DisplayAlert("Error", "Ingresá un número de teléfono", "OK");
+            return;
+        }
+
+        await LlamarConPermisoAsync(numero);
+    }
+
+    private async Task LlamarConPermisoAsync(string numero)
+    {
+        var status = await Permissions.CheckStatusAsync<Permissions.Phone>();
+
+        if (status != PermissionStatus.Granted)
+        {
+            status = await Permissions.RequestAsync<Permissions.Phone>();
+        }
+
+        if (status == PermissionStatus.Granted)
+        {
+#if ANDROID
+            var intent = new Android.Content.Intent(Android.Content.Intent.ActionCall);
+            intent.SetData(Android.Net.Uri.Parse($"tel:{numero}"));
+            intent.SetFlags(Android.Content.ActivityFlags.NewTask);
+            Platform.CurrentActivity?.StartActivity(intent);
+            LblEstado.Text = $"Llamando a: {numero}";
+#endif
+        }
+        else
+        {
+            if (Permissions.ShouldShowRationale<Permissions.Phone>())
+            {
+                bool reintentar = await DisplayAlert(
+                    "Permiso necesario",
+                    "Necesitamos acceso al teléfono para hacer la llamada directa.",
+                    "Reintentar", "Cancelar");
+
+                if (reintentar)
+                    await LlamarConPermisoAsync(numero);
+            }
+            else
+            {
+                bool abrirConfig = await DisplayAlert(
+                    "Permiso bloqueado",
+                    "El permiso de teléfono fue denegado. Abrí Configuración para habilitarlo.",
+                    "Abrir Configuración", "Cancelar");
+
+                if (abrirConfig)
+                    AppInfo.Current.ShowSettingsUI();
+            }
+        }
+    }
+}
+```
+
+---
+
+## 32. Ejemplo Completo: Página de Contacto Multicanal
+
+### 32.1 XAML — ContactoPage.xaml
+
+```xml
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="MiApp.ContactoPage"
+             Title="Contacto">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="20" Spacing="15">
+            <Label Text="Contactanos"
+                   FontSize="28" FontAttributes="Bold" />
+
+            <Label Text="Elegí cómo querés comunicarte con nosotros:"
+                   FontSize="16" TextColor="Gray" />
+
+            <!-- Teléfono -->
+            <Frame Padding="15" CornerRadius="10">
+                <VerticalStackLayout Spacing="8">
+                    <Label Text="📞 Teléfono" FontSize="18" FontAttributes="Bold" />
+                    <Label Text="+54 9 11 5555-1234" TextColor="Gray" />
+                    <Button Text="Llamar"
+                            Clicked="OnLlamar_Clicked"
+                            BackgroundColor="{StaticResource Primary}" />
+                </VerticalStackLayout>
+            </Frame>
+
+            <!-- SMS -->
+            <Frame Padding="15" CornerRadius="10">
+                <VerticalStackLayout Spacing="8">
+                    <Label Text="💬 SMS" FontSize="18" FontAttributes="Bold" />
+                    <Label Text="+54 9 11 5555-1234" TextColor="Gray" />
+                    <Button Text="Enviar SMS"
+                            Clicked="OnSms_Clicked"
+                            BackgroundColor="{StaticResource Primary}" />
+                </VerticalStackLayout>
+            </Frame>
+
+            <!-- Email -->
+            <Frame Padding="15" CornerRadius="10">
+                <VerticalStackLayout Spacing="8">
+                    <Label Text="📧 Email" FontSize="18" FontAttributes="Bold" />
+                    <Label Text="info@ejemplo.com" TextColor="Gray" />
+                    <Button Text="Enviar email"
+                            Clicked="OnEmail_Clicked"
+                            BackgroundColor="{StaticResource Primary}" />
+                </VerticalStackLayout>
+            </Frame>
+
+            <!-- WhatsApp -->
+            <Frame Padding="15" CornerRadius="10">
+                <VerticalStackLayout Spacing="8">
+                    <Label Text="WhatsApp" FontSize="18" FontAttributes="Bold" />
+                    <Label Text="+54 9 11 5555-1234" TextColor="Gray" />
+                    <Button Text="Abrir WhatsApp"
+                            Clicked="OnWhatsApp_Clicked"
+                            BackgroundColor="#25D366" TextColor="White" />
+                </VerticalStackLayout>
+            </Frame>
+
+            <!-- Telegram -->
+            <Frame Padding="15" CornerRadius="10">
+                <VerticalStackLayout Spacing="8">
+                    <Label Text="Telegram" FontSize="18" FontAttributes="Bold" />
+                    <Label Text="@soporte_app" TextColor="Gray" />
+                    <Button Text="Abrir Telegram"
+                            Clicked="OnTelegram_Clicked"
+                            BackgroundColor="#0088cc" TextColor="White" />
+                </VerticalStackLayout>
+            </Frame>
+
+            <Label x:Name="LblEstado"
+                   TextColor="Gray" FontSize="12"
+                   HorizontalOptions="Center" />
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>
+```
+
+### 32.2 Code-behind — ContactoPage.xaml.cs
+
+```csharp
+using Microsoft.Maui.ApplicationModel;
+using Microsoft.Maui.ApplicationModel.Communication;
+
+namespace MiApp;
+
+public partial class ContactoPage : ContentPage
+{
+    private const string Telefono = "+5491155551234";
+    private const string EmailContacto = "info@ejemplo.com";
+    private const string NumeroWhatsApp = "5491155551234"; // sin +
+    private const string UsuarioTelegram = "soporte_app";
+
+    public ContactoPage()
+    {
+        InitializeComponent();
+    }
+
+    // ── Teléfono ──────────────────────────────────────────────
+    private async void OnLlamar_Clicked(object sender, EventArgs e)
+    {
+        if (PhoneDialer.Default.IsSupported)
+        {
+            try
+            {
+                PhoneDialer.Default.Open(Telefono);
+            }
+            catch (Exception ex)
+            {
+                await DisplayAlert("Error", ex.Message, "OK");
+            }
+        }
+        else
+        {
+            await MostrarNoSoportado("llamadas telefónicas");
+        }
+    }
+
+    // ── SMS ───────────────────────────────────────────────────
+    private async void OnSms_Clicked(object sender, EventArgs e)
+    {
+        if (Sms.Default.IsComposeSupported)
+        {
+            var mensaje = new SmsMessage("Hola, quería consultar...", new[] { Telefono });
+            await Sms.Default.ComposeAsync(mensaje);
+        }
+        else
+        {
+            await MostrarNoSoportado("SMS");
+        }
+    }
+
+    // ── Email ─────────────────────────────────────────────────
+    private async void OnEmail_Clicked(object sender, EventArgs e)
+    {
+        if (Email.Default.IsComposeSupported)
+        {
+            var email = new EmailMessage
+            {
+                Subject = "Consulta desde la app",
+                Body = "Hola, quería consultar sobre...",
+                To = new List<string> { EmailContacto }
+            };
+            await Email.Default.ComposeAsync(email);
+        }
+        else
+        {
+            // Fallback: copiar email al portapapeles
+            await Clipboard.Default.SetTextAsync(EmailContacto);
+            await DisplayAlert("Sin app de email",
+                $"La dirección {EmailContacto} fue copiada al portapapeles", "OK");
+        }
+    }
+
+    // ── WhatsApp ──────────────────────────────────────────────
+    private async void OnWhatsApp_Clicked(object sender, EventArgs e)
+    {
+        await AbrirAppExternaAsync(
+            $"https://wa.me/{NumeroWhatsApp}?text=Hola%2C%20consulto%20desde%20la%20app",
+            "WhatsApp");
+    }
+
+    // ── Telegram ──────────────────────────────────────────────
+    private async void OnTelegram_Clicked(object sender, EventArgs e)
+    {
+        await AbrirAppExternaAsync($"https://t.me/{UsuarioTelegram}", "Telegram");
+    }
+
+    // ── Helpers ───────────────────────────────────────────────
+    private async Task AbrirAppExternaAsync(string uri, string nombreApp)
+    {
+        try
+        {
+            if (await Launcher.Default.CanOpenAsync(uri))
+            {
+                await Launcher.Default.OpenAsync(uri);
+            }
+            else
+            {
+                await DisplayAlert("No disponible",
+                    $"{nombreApp} no está instalado en este dispositivo", "OK");
+            }
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlert("Error", $"No se pudo abrir {nombreApp}: {ex.Message}", "OK");
+        }
+    }
+
+    private async Task MostrarNoSoportado(string funcionalidad)
+    {
+        await DisplayAlert("No soportado",
+            $"Este dispositivo no soporta {funcionalidad}", "OK");
+    }
+}
+```
+
+### 32.3 Diagrama de flujo — Contacto Multicanal
+
+```
+ContactoPage
+    │
+    ├── [Llamar] → PhoneDialer.IsSupported?
+    │                ├── Sí → PhoneDialer.Open(número)
+    │                └── No → "No soportado"
+    │
+    ├── [SMS] → Sms.IsComposeSupported?
+    │             ├── Sí → Sms.ComposeAsync(mensaje)
+    │             └── No → "No soportado"
+    │
+    ├── [Email] → Email.IsComposeSupported?
+    │              ├── Sí → Email.ComposeAsync(email)
+    │              └── No → Copiar al portapapeles
+    │
+    ├── [WhatsApp] → Launcher.CanOpenAsync("wa.me/...")?
+    │                  ├── Sí → Launcher.OpenAsync(url)
+    │                  └── No → "WhatsApp no instalado"
+    │
+    └── [Telegram] → Launcher.CanOpenAsync("t.me/...")?
+                       ├── Sí → Launcher.OpenAsync(url)
+                       └── No → "Telegram no instalado"
+```
+
+---
+
+# PARTE V — REFERENCIA
+
+---
+
+## 33. Troubleshooting Unificado (Cámara + GPS + PhoneDialer + SMS)
+
+### 33.1 Errores de Cámara
 
 | Error | Causa | Solución |
 |-------|-------|----------|
@@ -2961,7 +4001,7 @@ Usuario toca "Obtener GPS y Enviar"
 | `CameraException: No camera available on device` (SIGABRT) | `CameraView` declarado en XAML en dispositivo sin cámara | No declarar `CameraView` en XAML; crearlo dinámicamente (ver sección 8.1) |
 | `CameraView` crashea con `IsVisible="False"` | `IsVisible` no evita `ConnectHandler` | Usar `ContentView` como contenedor + creación dinámica (ver sección 8.1) |
 
-### 18.2 Errores de GPS
+### 33.2 Errores de GPS
 
 | Error | Causa | Solución |
 |-------|-------|----------|
@@ -2974,18 +4014,32 @@ Usuario toca "Obtener GPS y Enviar"
 | `GetLocationAsync` tarda mucho | Timeout corto + GPS frío ("cold start") | Aumentar timeout a 15-30s |
 | `PermissionException` al pedir ubicación | Se llamó a `GetLocationAsync` sin verificar permisos antes; el usuario canceló/denegó el diálogo del SO | Verificar permisos con `CheckStatusAsync` / `RequestAsync` **antes** de llamar a `GetLocationAsync`. No usar excepciones como control de flujo (ver sección 17.3) |
 
-### 18.3 Errores comunes (ambos)
+### 33.3 Errores comunes (ambos)
 
 | Error | Causa | Solución |
 |-------|-------|----------|
 | Permisos se muestran como denegados en primera ejecución (Android) | `CheckStatusAsync` devuelve `Denied` en vez de `Unknown` | Siempre llamar a `RequestAsync` si no está `Granted` (sección 3.2) |
 | `ShouldShowRationale` devuelve `false` pero el permiso nunca se pidió | Comportamiento esperado de Android | Llamar a `ShouldShowRationale` después de `RequestAsync` (sección 3.3) |
 
+### 33.4 Errores de PhoneDialer / SMS / Email
+
+| Error | Causa | Solución |
+|-------|-------|----------|
+| `ArgumentNullException` en `PhoneDialer.Open()` | Se pasó cadena vacía o `null` | Validar que el número no sea vacío antes de llamar |
+| `FeatureNotSupportedException` en `PhoneDialer.Open()` | Dispositivo sin capacidad de llamadas (tablet wifi-only) | Verificar `PhoneDialer.Default.IsSupported` antes de llamar |
+| `PhoneDialer.Default.IsSupported` devuelve `false` en dispositivo físico con SIM | Falta `<queries>` en `AndroidManifest.xml` (Android 11+ / API 30) | Agregar `<queries>` con intent `android.intent.action.DIAL` y esquema `tel` (sección 22.1) |
+| `SecurityException` al usar `Intent.ActionCall` | Falta `CALL_PHONE` en `AndroidManifest.xml` o no se pidió en runtime | Agregar permiso en Manifest + pedir con `Permissions.RequestAsync<Permissions.Phone>()` |
+| `ActivityNotFoundException` al abrir WhatsApp/Telegram | App no instalada en el dispositivo | Verificar con `Launcher.CanOpenAsync()` antes de abrir |
+| `CanOpenAsync` devuelve `false` aunque la app está instalada (Android 11+) | Falta `<queries>` en `AndroidManifest.xml` | Agregar `<queries>` con los intents/packages necesarios (sección 22.1) |
+| `CanOpenAsync` devuelve `false` en iOS | Falta esquema en `LSApplicationQueriesSchemes` | Agregar el esquema (`whatsapp`, `tg`, etc.) en `Info.plist` (sección 22.2) |
+| `Sms.ComposeAsync` no hace nada en emulador | Emulador no tiene app SMS funcional | Probar en dispositivo físico |
+| `Email.ComposeAsync` lanza excepción en emulador | No hay app de email configurada | Verificar `Email.Default.IsComposeSupported` antes |
+
 ---
 
-## 19. Checklists de Verificación
+## 34. Checklists de Verificación
 
-### 19.1 Checklist — Cámara con MediaPicker
+### 34.1 Checklist — Cámara con MediaPicker
 
 ```
 ✅ AndroidManifest.xml
@@ -3014,7 +4068,7 @@ Usuario toca "Obtener GPS y Enviar"
    └── try-catch en toda la cadena
 ```
 
-### 19.2 Checklist — Cámara con CameraView (CommunityToolkit)
+### 34.2 Checklist — Cámara con CameraView (CommunityToolkit)
 
 ```
 ✅ NuGet
@@ -3044,7 +4098,7 @@ Usuario toca "Obtener GPS y Enviar"
    └── Limpiar CameraView en OnDisappearing
 ```
 
-### 19.3 Checklist — GPS / Geolocalización
+### 34.3 Checklist — GPS / Geolocalización
 
 ```
 ✅ AndroidManifest.xml
@@ -3069,13 +4123,85 @@ Usuario toca "Obtener GPS y Enviar"
    └── try-catch en toda la cadena
 ```
 
-### 19.4 Probar en emulador
+### 34.4 Checklist — PhoneDialer (marcador)
+
+```
+✅ AndroidManifest.xml
+   ├── NO necesita permisos para PhoneDialer.Open()
+   ├── android.permission.CALL_PHONE (solo si usás Intent.ActionCall)
+   └── <queries> con intent DIAL y scheme tel (Android 11+)
+
+✅ Info.plist (iOS)
+   └── NO necesita configuración para tel:/sms: (esquemas del sistema)
+   └── LSApplicationQueriesSchemes solo para apps de terceros (whatsapp, tg)
+
+✅ Código C#
+   ├── Verificar PhoneDialer.Default.IsSupported (requiere <queries> en Android 11+)
+   ├── Validar número no vacío antes de Open()
+   ├── try-catch para FeatureNotSupportedException
+   └── #if ANDROID para código de Intent.ActionCall
+```
+
+### 34.5 Checklist — SMS
+
+```
+✅ AndroidManifest.xml
+   └── <queries> con intent SENDTO y scheme smsto (Android 11+)
+
+✅ Info.plist (iOS)
+   └── LSApplicationQueriesSchemes: sms
+
+✅ Código C#
+   ├── Verificar Sms.Default.IsComposeSupported
+   ├── Crear SmsMessage con body y destinatarios
+   └── try-catch en ComposeAsync
+```
+
+### 34.6 Checklist — Email
+
+```
+✅ AndroidManifest.xml
+   └── <queries> con intent SENDTO y scheme mailto (Android 11+)
+
+✅ Info.plist (iOS)
+   └── LSApplicationQueriesSchemes: mailto
+
+✅ Código C#
+   ├── Verificar Email.Default.IsComposeSupported
+   ├── Crear EmailMessage con Subject, Body, To
+   ├── Fallback: copiar email al portapapeles si no hay app
+   └── try-catch en ComposeAsync
+```
+
+### 34.7 Checklist — WhatsApp / Telegram vía Launcher
+
+```
+✅ AndroidManifest.xml
+   ├── <package android:name="com.whatsapp" /> en <queries>
+   └── <package android:name="org.telegram.messenger" /> en <queries>
+
+✅ Info.plist (iOS)
+   └── LSApplicationQueriesSchemes: whatsapp, tg
+
+✅ Código C#
+   ├── Verificar Launcher.CanOpenAsync(uri) ANTES de abrir
+   ├── Formato WhatsApp: https://wa.me/{número_sin_+}
+   ├── Formato Telegram: https://t.me/{usuario}
+   ├── Mostrar mensaje si app no instalada
+   └── try-catch en OpenAsync
+```
+
+### 34.8 Probar en emulador
 
 **Android (Android Studio AVD):**
 ```bash
 # Revocar/conceder permisos de cámara
 adb shell pm revoke com.tuapp.package android.permission.CAMERA
 adb shell pm grant com.tuapp.package android.permission.CAMERA
+
+# Revocar/conceder permisos de teléfono (CALL_PHONE)
+adb shell pm revoke com.tuapp.package android.permission.CALL_PHONE
+adb shell pm grant com.tuapp.package android.permission.CALL_PHONE
 
 # Establecer ubicación GPS simulada
 adb emu geo fix -34.5986 -58.4208   # Buenos Aires
@@ -3087,7 +4213,22 @@ adb shell dumpsys package com.tuapp.package | grep permission
 **iOS (Xcode Simulator):**
 - **Cámara**: Simuladores no tienen cámara real → usar dispositivo físico.
 - **GPS**: Menú **Features > Location** > elegir ubicación predefinida.
+- **PhoneDialer**: `IsSupported` devuelve `false` en simulador → probar en dispositivo físico.
+- **SMS/Email**: Abren compositor pero no envían realmente.
 - **Resetear permisos**: **Device > Erase All Content and Settings**.
+
+### 34.9 Resumen de permisos por funcionalidad
+
+| Funcionalidad | Android Manifest | iOS Info.plist | Permiso runtime |
+|--------------|-----------------|----------------|-----------------|
+| Cámara (MediaPicker) | `CAMERA`, `READ_MEDIA_IMAGES` | `NSCameraUsageDescription` | Sí |
+| Cámara (CameraView) | `CAMERA` | `NSCameraUsageDescription` | Sí |
+| GPS | `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` | `NSLocationWhenInUseUsageDescription` | Sí |
+| PhoneDialer (marcador) | Ninguno | Ninguno | No |
+| Llamada directa | `CALL_PHONE` | ❌ No disponible | Sí (Android) |
+| SMS | Ninguno | Ninguno | No |
+| Email | Ninguno | Ninguno | No |
+| WhatsApp/Telegram | `<queries>` (Android 11+) | `LSApplicationQueriesSchemes` | No |
 
 ---
 
@@ -3096,3 +4237,4 @@ adb shell dumpsys package com.tuapp.package | grep permission
 > - La ubicación es un dato sensible. Guardá coordenadas solo si es necesario.
 > - Si transmitís datos a un servidor, usá HTTPS.
 > - Informá al usuario claramente por qué necesitás cada permiso — requisito de Apple y buena práctica de UX.
+> - Los números de teléfono son datos personales — no los guardes sin consentimiento del usuario.
